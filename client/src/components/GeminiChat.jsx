@@ -28,7 +28,7 @@ export default function GeminiChat() {
       const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         headers: {
-          'Authorization': 'Bearer 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',
+          'Authorization': 'Bearer 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',
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
