@@ -1,0 +1,1461 @@
+const express = require('express');
+const cors = require('cors');
+require('dotenv').config();
+const { requireAuth, optionalAuth, getUserById, createUserProfile, updateUserProfile, supabase } = require('./services/supabaseAuth');
+const locationService = require('./services/locationService');
+const portFinder = require('./utils/portFinder');
+const sharedPortConfig = require('../shared-config/portConfig');
+
+const app = express();
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// In-memory storage (in a real app, you'd use a database)
+let items = [
+  { id: 1, name: 'Learn React', completed: false },
+  { id: 2, name: 'Build a full-stack app', completed: false },
+  { id: 3, name: 'Deploy to production', completed: false }
+];
+
+let nextId = 4;
+
+// Simple in-memory user storage (in a real app, use a database)
+let users = [
+  { id: 1, name: 'Demo User', email: 'demo@example.com', password: 'password123', createdAt: new Date().toISOString() }
+];
+
+let nextUserId = 2;
+
+// Routes
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    message: 'Server is running',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Port configuration endpoint for client synchronization
+app.get('/api/port-config', (req, res) => {
+  const config = sharedPortConfig.getPortConfig();
+  if (config) {
+    res.json({
+      port: config.port,
+      timestamp: config.timestamp,
+      status: 'synchronized'
+    });
+  } else {
+    res.status(404).json({
+      status: 'not_found',
+      message: 'No port configuration available'
+    });
+  }
+});
+
+// Authentication routes
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { email, password, name } = req.body;
+    
+    if (!email || !password || !name) {
+      return res.status(400).json({ error: 'Email, password, and name are required' });
+    }
+    
+    // Create user with Supabase
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          full_name: name
+        }
+      }
+    });
+    
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    
+    if (data.user) {
+      // Create user profile
+      await createUserProfile(data.user);
+      
+      res.status(201).json({
+        user: { 
+          id: data.user.id, 
+          email: data.user.email, 
+          name: data.user.user_metadata?.full_name,
+          createdAt: data.user.created_at 
+        },
+        session: data.session
+      });
+    } else {
+      res.status(400).json({ error: 'Failed to create user' });
+    }
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+    
+    // Sign in with Supabase
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password
+    });
+    
+    if (error) {
+      return res.status(401).json({ error: error.message });
+    }
+    
+    if (data.user) {
+      res.json({
+        user: { 
+          id: data.user.id, 
+          email: data.user.email, 
+          name: data.user.user_metadata?.full_name,
+          createdAt: data.user.created_at 
+        },
+        session: data.session
+      });
+    } else {
+      res.status(401).json({ error: 'Invalid credentials' });
+    }
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/auth/me', requireAuth, async (req, res) => {
+  try {
+    const user = req.user;
+    
+    // Get additional user profile data
+    const profile = await getUserById(user.id);
+    
+    res.json({
+      user: { 
+        id: user.id, 
+        email: user.email, 
+        name: user.user_metadata?.full_name,
+        createdAt: user.created_at,
+        profile: profile
+      }
+    });
+  } catch (error) {
+    console.error('Get user error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Logout route
+app.post('/api/auth/logout', requireAuth, async (req, res) => {
+  try {
+    // Sign out from Supabase
+    const { error } = await supabase.auth.signOut();
+    
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    
+    res.json({ message: 'Logged out successfully' });
+  } catch (error) {
+    console.error('Logout error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get all items (with optional auth)
+app.get('/api/items', optionalAuth, (req, res) => {
+  res.json(items);
+});
+
+// Get a specific item
+app.get('/api/items/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  const item = items.find(item => item.id === id);
+  
+  if (!item) {
+    return res.status(404).json({ error: 'Item not found' });
+  }
+  
+  res.json(item);
+});
+
+// Create a new item (requires auth)
+app.post('/api/items', requireAuth, (req, res) => {
+  const { name, completed = false } = req.body;
+  
+  if (!name || typeof name !== 'string' || name.trim().length === 0) {
+    return res.status(400).json({ error: 'Name is required and must be a non-empty string' });
+  }
+  
+  const newItem = {
+    id: nextId++,
+    name: name.trim(),
+    completed: Boolean(completed)
+  };
+  
+  items.push(newItem);
+  res.status(201).json(newItem);
+});
+
+// Update an item (requires auth)
+app.put('/api/items/:id', requireAuth, (req, res) => {
+  const id = parseInt(req.params.id);
+  const itemIndex = items.findIndex(item => item.id === id);
+  
+  if (itemIndex === -1) {
+    return res.status(404).json({ error: 'Item not found' });
+  }
+  
+  const { name, completed } = req.body;
+  
+  if (name !== undefined) {
+    if (typeof name !== 'string' || name.trim().length === 0) {
+      return res.status(400).json({ error: 'Name must be a non-empty string' });
+    }
+    items[itemIndex].name = name.trim();
+  }
+  
+  if (completed !== undefined) {
+    items[itemIndex].completed = Boolean(completed);
+  }
+  
+  res.json(items[itemIndex]);
+});
+
+// Delete an item (requires auth)
+app.delete('/api/items/:id', requireAuth, (req, res) => {
+  const id = parseInt(req.params.id);
+  const itemIndex = items.findIndex(item => item.id === id);
+  
+  if (itemIndex === -1) {
+    return res.status(404).json({ error: 'Item not found' });
+  }
+  
+  const deletedItem = items.splice(itemIndex, 1)[0];
+  res.json({ message: 'Item deleted successfully', item: deletedItem });
+});
+
+// Enhanced Location API endpoints
+// Get enhanced location data (geocoding + nearby places)
+app.post('/api/location/enhanced', async (req, res) => {
+  try {
+    const { latitude, longitude } = req.body;
+    
+    if (!latitude || !longitude) {
+      return res.status(400).json({ error: 'Latitude and longitude are required' });
+    }
+
+    const enhancedData = await locationService.getEnhancedLocationData(latitude, longitude);
+    res.json(enhancedData);
+  } catch (error) {
+    console.error('Enhanced location error:', error);
+    res.status(500).json({ error: 'Failed to get enhanced location data' });
+  }
+});
+
+// Geocode coordinates to address
+app.post('/api/location/geocode', async (req, res) => {
+  try {
+    const { latitude, longitude } = req.body;
+    
+    if (!latitude || !longitude) {
+      return res.status(400).json({ error: 'Latitude and longitude are required' });
+    }
+
+    const geocodeResult = await locationService.geocodeLocation(latitude, longitude);
+    res.json(geocodeResult);
+  } catch (error) {
+    console.error('Geocoding error:', error);
+    res.status(500).json({ error: 'Failed to geocode location' });
+  }
+});
+
+// Get nearby places
+app.post('/api/location/nearby', async (req, res) => {
+  try {
+    const { latitude, longitude, radius = 1000, type = 'establishment' } = req.body;
+    
+    if (!latitude || !longitude) {
+      return res.status(400).json({ error: 'Latitude and longitude are required' });
+    }
+
+    const nearbyResult = await locationService.getNearbyPlaces(latitude, longitude, radius, type);
+    res.json(nearbyResult);
+  } catch (error) {
+    console.error('Nearby places error:', error);
+    res.status(500).json({ error: 'Failed to get nearby places' });
+  }
+});
+
+// Get place details
+app.get('/api/location/place/:placeId', async (req, res) => {
+  try {
+    const { placeId } = req.params;
+    
+    if (!placeId) {
+      return res.status(400).json({ error: 'Place ID is required' });
+    }
+
+    const placeDetails = await locationService.getPlaceDetails(placeId);
+    res.json(placeDetails);
+  } catch (error) {
+    console.error('Place details error:', error);
+    res.status(500).json({ error: 'Failed to get place details' });
+  }
+});
+
+// Calculate distance between two points
+app.post('/api/location/distance', async (req, res) => {
+  try {
+    const { origin, destination, mode = 'driving' } = req.body;
+    
+    if (!origin || !destination) {
+      return res.status(400).json({ error: 'Origin and destination are required' });
+    }
+
+    const distanceResult = await locationService.getDistanceMatrix(origin, destination, mode);
+    res.json(distanceResult);
+  } catch (error) {
+    console.error('Distance calculation error:', error);
+    res.status(500).json({ error: 'Failed to calculate distance' });
+  }
+});
+
+// Get directions between two points
+app.post('/api/location/directions', async (req, res) => {
+  try {
+    const { origin, destination, mode = 'driving' } = req.body;
+    
+    if (!origin || !destination) {
+      return res.status(400).json({ error: 'Origin and destination are required' });
+    }
+
+    const directionsResult = await locationService.getDirections(origin, destination, mode);
+    res.json(directionsResult);
+  } catch (error) {
+    console.error('Directions error:', error);
+    res.status(500).json({ error: 'Failed to get directions' });
+  }
+});
+
+// Check if API is configured
+app.get('/api/location/config', (req, res) => {
+  res.json({
+    configured: locationService.isConfigured(),
+    message: locationService.isConfigured() 
+      ? 'API is configured' 
+      : 'API key not configured. Please set GOOGLE_MAPS_API_KEY environment variable.'
+  });
+});
+
+// ===== FRIENDS SYSTEM API ENDPOINTS =====
+
+// Get user's friends
+app.get('/api/friends', requireAuth, async (req, res) => {
+  try {
+    const { data: friends, error } = await supabase
+      .from('friends')
+      .select(`
+        *,
+        friend:friend_id (
+          id, full_name, email, avatar_url
+        )
+      `)
+      .eq('user_id', req.user.id)
+      .eq('status', 'accepted');
+    
+    if (error) throw error;
+    res.json(friends);
+  } catch (error) {
+    console.error('Error fetching friends:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get pending friend requests
+app.get('/api/friends/requests', requireAuth, async (req, res) => {
+  try {
+    const { data: requests, error } = await supabase
+      .from('friends')
+      .select(`
+        *,
+        user:user_id (
+          id, full_name, email, avatar_url
+        )
+      `)
+      .eq('friend_id', req.user.id)
+      .eq('status', 'pending');
+    
+    if (error) throw error;
+    res.json(requests);
+  } catch (error) {
+    console.error('Error fetching friend requests:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Send friend request
+app.post('/api/friends/request', requireAuth, async (req, res) => {
+  try {
+    const { friendEmail } = req.body;
+    
+    if (!friendEmail) {
+      return res.status(400).json({ error: 'Friend email is required' });
+    }
+    
+    // Find friend by email
+    const { data: friend, error: friendError } = await supabase
+      .from('profiles')
+      .select('id, full_name, email')
+      .eq('email', friendEmail)
+      .single();
+    
+    if (friendError || !friend) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    if (friend.id === req.user.id) {
+      return res.status(400).json({ error: 'Cannot add yourself as a friend' });
+    }
+    
+    // Check if friendship already exists
+    const { data: existingFriendship, error: checkError } = await supabase
+      .from('friends')
+      .select('*')
+      .or(`and(user_id.eq.${req.user.id},friend_id.eq.${friend.id}),and(user_id.eq.${friend.id},friend_id.eq.${req.user.id})`)
+      .single();
+    
+    if (existingFriendship) {
+      return res.status(400).json({ error: 'Friendship already exists or pending' });
+    }
+    
+    // Create friend request
+    const { data, error } = await supabase
+      .from('friends')
+      .insert({
+        user_id: req.user.id,
+        friend_id: friend.id,
+        status: 'pending'
+      })
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    res.json({ 
+      message: 'Friend request sent',
+      friendship: data
+    });
+  } catch (error) {
+    console.error('Error sending friend request:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Accept friend request
+app.post('/api/friends/accept/:requestId', requireAuth, async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    
+    const { data, error } = await supabase
+      .from('friends')
+      .update({ status: 'accepted' })
+      .eq('id', requestId)
+      .eq('friend_id', req.user.id)
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    if (!data) {
+      return res.status(404).json({ error: 'Friend request not found' });
+    }
+    
+    res.json({ message: 'Friend request accepted', friendship: data });
+  } catch (error) {
+    console.error('Error accepting friend request:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Reject friend request
+app.post('/api/friends/reject/:requestId', requireAuth, async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    
+    const { data, error } = await supabase
+      .from('friends')
+      .update({ status: 'blocked' })
+      .eq('id', requestId)
+      .eq('friend_id', req.user.id)
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    if (!data) {
+      return res.status(404).json({ error: 'Friend request not found' });
+    }
+    
+    res.json({ message: 'Friend request rejected', friendship: data });
+  } catch (error) {
+    console.error('Error rejecting friend request:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Remove friend
+app.delete('/api/friends/:friendId', requireAuth, async (req, res) => {
+  try {
+    const { friendId } = req.params;
+    
+    const { error } = await supabase
+      .from('friends')
+      .delete()
+      .or(`and(user_id.eq.${req.user.id},friend_id.eq.${friendId}),and(user_id.eq.${friendId},friend_id.eq.${req.user.id})`);
+    
+    if (error) throw error;
+    
+    res.json({ message: 'Friend removed' });
+  } catch (error) {
+    console.error('Error removing friend:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== LOCATION TRACKING API ENDPOINTS =====
+
+// Save location data
+app.post('/api/location/track', requireAuth, async (req, res) => {
+  try {
+    const { latitude, longitude, accuracy, enhancedData } = req.body;
+    
+    if (!latitude || !longitude) {
+      return res.status(400).json({ error: 'Latitude and longitude are required' });
+    }
+    
+    // Try to insert into location_tracks table
+    const { data, error } = await supabase
+      .from('location_tracks')
+      .insert({
+        user_id: req.user.id,
+        latitude,
+        longitude,
+        accuracy,
+        enhanced_data: enhancedData
+      })
+      .select()
+      .single();
+    
+    if (error) {
+      // If table doesn't exist or other database error, return success but with warning
+      if (error.code === 'PGRST116' || (error.message && error.message.includes('relation "location_tracks" does not exist'))) {
+        // Silently handle missing table
+        return res.json({ 
+          message: 'Location received (tracking disabled)', 
+          warning: 'location_tracks table not found - please apply the database schema to enable location tracking' 
+        });
+      }
+      throw error;
+    }
+    
+    res.json({ message: 'Location saved', location: data });
+  } catch (error) {
+    // Silently handle location tracking errors
+    // Return success with warning instead of 500 error
+    res.json({ 
+      message: 'Location received (tracking may be disabled)', 
+      warning: 'Location tracking encountered an error: ' + error.message 
+    });
+  }
+});
+
+// AI Insights endpoint
+app.post('/api/ai/insights', requireAuth, async (req, res) => {
+  try {
+    const { userData, locationData } = req.body;
+    
+    // Use the Gemini API key from server environment
+    const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
+    
+    if (!apiKey) {
+      return res.json({
+        success: false,
+        message: 'AI service not configured',
+        fallback: [
+          {
+            insight: 'You\'re building great exploration habits!',
+            recommendation: 'Try visiting a new location each week to expand your campus knowledge.'
+          },
+          {
+            insight: 'Consistency is key to campus mastery',
+            recommendation: 'Set a goal to spend at least 30 minutes in each location you visit.'
+          }
+        ]
+      });
+    }
+
+    const prompt = `Analyze this user's campus exploration data and provide 2-3 personalized insights:
+
+User Data:
+- Total time spent: ${Math.round((userData.totalTime || 0) / 60)} minutes
+- Favorite location: ${userData.favoriteLocation || 'Not determined'}
+- Visit patterns: ${userData.visitPatterns || 'No clear pattern'}
+
+Location Data:
+- Most visited: ${locationData.mostVisited || 'Unknown'}
+- Peak hours: ${locationData.peakHours || 'Unknown'}
+
+Provide insights that are:
+- Personal and actionable
+- Based on their actual behavior
+- Encouraging and motivating
+- Include specific recommendations
+- Format as JSON array with {insight, recommendation}
+
+Example: [{"insight": "You're most productive in the morning", "recommendation": "Try visiting the Library between 9-11 AM for optimal focus!"}]`;
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        contents: [{
+          parts: [{
+            text: prompt
+          }]
+        }]
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Gemini API request failed: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const aiResponse = data.candidates[0].content.parts[0].text;
+    
+    // Try to parse JSON from response
+    try {
+      const jsonMatch = aiResponse.match(/\[.*\]/s);
+      if (jsonMatch) {
+        const insights = JSON.parse(jsonMatch[0]);
+        return res.json({ success: true, insights });
+      }
+    } catch (parseError) {
+      console.warn('Failed to parse AI insights JSON:', parseError);
+    }
+
+    // Fallback if parsing fails
+    return res.json({
+      success: true,
+      insights: [
+        {
+          insight: 'You\'re building great exploration habits!',
+          recommendation: 'Try visiting a new location each week to expand your campus knowledge.'
+        },
+        {
+          insight: 'Consistency is key to campus mastery',
+          recommendation: 'Set a goal to spend at least 30 minutes in each location you visit.'
+        }
+      ]
+    });
+
+  } catch (error) {
+    console.error('AI insights error:', error);
+    res.json({
+      success: false,
+      message: 'AI service temporarily unavailable',
+      fallback: [
+        {
+          insight: 'You\'re building great exploration habits!',
+          recommendation: 'Try visiting a new location each week to expand your campus knowledge.'
+        }
+      ]
+    });
+  }
+});
+
+// AI Recommendations endpoint
+app.post('/api/ai/recommendations', requireAuth, async (req, res) => {
+  try {
+    const { userHistory, currentLocation } = req.body;
+    
+    const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
+    
+    if (!apiKey) {
+      return res.json({
+        success: false,
+        message: 'AI service not configured',
+        fallback: [
+          {
+            name: 'Library',
+            reason: 'Perfect for focused study sessions',
+            tip: 'The top floor has the quietest study areas!'
+          },
+          {
+            name: 'Student Center',
+            reason: 'Great for socializing and group work',
+            tip: 'Check out the game room on the second floor!'
+          }
+        ]
+      });
+    }
+
+    const visitedLocations = userHistory.map(h => h.locationName).join(', ');
+    const totalTime = userHistory.reduce((sum, h) => sum + h.timeSpent, 0);
+    
+    const prompt = `Based on this user's location history, suggest 2-3 new locations they might enjoy exploring:
+
+User History:
+- Visited: ${visitedLocations || 'No previous visits'}
+- Total time spent: ${Math.round(totalTime / 60)} minutes
+- Current location: ${currentLocation}
+
+Available campus locations: HUB, Library, Engineering Building, Student Center, Gym, Cafeteria, Art Building, Science Hall
+
+Suggestions should be:
+- Personalized based on their patterns
+- Include brief reasoning
+- Be encouraging and fun
+- Format as JSON array with {name, reason, tip}
+
+Example: [{"name": "Library", "reason": "You seem to enjoy quiet study spaces", "tip": "The 3rd floor has the best natural lighting!"}]`;
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        contents: [{
+          parts: [{
+            text: prompt
+          }]
+        }]
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Gemini API request failed: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const aiResponse = data.candidates[0].content.parts[0].text;
+    
+    // Try to parse JSON from response
+    try {
+      const jsonMatch = aiResponse.match(/\[.*\]/s);
+      if (jsonMatch) {
+        const recommendations = JSON.parse(jsonMatch[0]);
+        return res.json({ success: true, recommendations });
+      }
+    } catch (parseError) {
+      console.warn('Failed to parse AI recommendations JSON:', parseError);
+    }
+
+    // Fallback if parsing fails
+    return res.json({
+      success: true,
+      recommendations: [
+        {
+          name: 'Library',
+          reason: 'Perfect for focused study sessions',
+          tip: 'The top floor has the quietest study areas!'
+        },
+        {
+          name: 'Student Center',
+          reason: 'Great for socializing and group work',
+          tip: 'Check out the game room on the second floor!'
+        }
+      ]
+    });
+
+  } catch (error) {
+    console.error('AI recommendations error:', error);
+    res.json({
+      success: false,
+      message: 'AI service temporarily unavailable',
+      fallback: [
+        {
+          name: 'Library',
+          reason: 'Perfect for focused study sessions',
+          tip: 'The top floor has the quietest study areas!'
+        }
+      ]
+    });
+  }
+});
+
+// AI Description endpoint
+app.post('/api/ai/description', requireAuth, async (req, res) => {
+  try {
+    const { locationName, context } = req.body;
+    
+    const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
+    
+    if (!apiKey) {
+      return res.json({
+        success: false,
+        message: 'AI service not configured',
+        fallback: `${locationName} is a great place to explore and discover new opportunities!`
+      });
+    }
+
+    const { timeOfDay, weather, userLevel, isBusy } = context;
+    
+    const prompt = `Generate a dynamic, engaging description for the location "${locationName}" on a university campus. 
+    
+Context:
+- Time: ${timeOfDay || 'unknown'}
+- Weather: ${weather || 'unknown'}
+- User Level: ${userLevel || 1}
+- Busy Status: ${isBusy ? 'busy' : 'quiet'}
+
+Make it:
+- 1-2 sentences maximum
+- Engaging and informative
+- Context-aware (mention time/weather if relevant)
+- Include a fun fact or tip about the location
+- Tone: friendly, helpful, slightly playful
+
+Example format: "The HUB is bustling with students grabbing lunch and socializing. Pro tip: The second floor has the quietest study nooks!"`;
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        contents: [{
+          parts: [{
+            text: prompt
+          }]
+        }]
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Gemini API request failed: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const description = data.candidates[0].content.parts[0].text;
+    
+    return res.json({ success: true, description });
+
+  } catch (error) {
+    console.error('AI description error:', error);
+    res.json({
+      success: false,
+      message: 'AI service temporarily unavailable',
+      fallback: `${req.body.locationName} is a great place to explore and discover new opportunities!`
+    });
+  }
+});
+
+// Get friend locations
+app.get('/api/friends/locations', requireAuth, async (req, res) => {
+  try {
+    const { data: locations, error } = await supabase
+      .rpc('get_friends_with_locations', { user_uuid: req.user.id });
+    
+    if (error) throw error;
+    res.json(locations);
+  } catch (error) {
+    console.error('Error fetching friend locations:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Check nearby friends
+app.post('/api/friends/nearby', requireAuth, async (req, res) => {
+  try {
+    const { latitude, longitude, distance = 1000 } = req.body;
+    
+    if (!latitude || !longitude) {
+      return res.status(400).json({ error: 'Latitude and longitude are required' });
+    }
+    
+    const { data: nearbyFriends, error } = await supabase
+      .rpc('check_nearby_friends', { 
+        user_uuid: req.user.id,
+        user_lat: latitude,
+        user_lng: longitude,
+        distance_meters: distance
+      });
+    
+    if (error) throw error;
+    res.json(nearbyFriends);
+  } catch (error) {
+    console.error('Error checking nearby friends:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== LOCATION SHARING API ENDPOINTS =====
+
+// Update location sharing permissions
+app.post('/api/location/sharing', requireAuth, async (req, res) => {
+  try {
+    const { friendId, canSeeLocation, canSeeHistory, expiresAt } = req.body;
+    
+    if (!friendId) {
+      return res.status(400).json({ error: 'Friend ID is required' });
+    }
+    
+    const { data, error } = await supabase
+      .from('location_sharing')
+      .upsert({
+        user_id: req.user.id,
+        friend_id: friendId,
+        can_see_location: canSeeLocation || false,
+        can_see_history: canSeeHistory || false,
+        expires_at: expiresAt || null
+      })
+      .select()
+      .single();
+    
+    if (error) throw error;
+    res.json({ message: 'Location sharing updated', sharing: data });
+  } catch (error) {
+    console.error('Error updating location sharing:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get location sharing settings
+app.get('/api/location/sharing', requireAuth, async (req, res) => {
+  try {
+    const { data: sharing, error } = await supabase
+      .from('location_sharing')
+      .select(`
+        *,
+        friend:friend_id (
+          id, full_name, email
+        )
+      `)
+      .eq('user_id', req.user.id);
+    
+    if (error) throw error;
+    res.json(sharing);
+  } catch (error) {
+    console.error('Error fetching location sharing:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== LOCATION SESSIONS API ENDPOINTS =====
+
+// Start a new location session
+app.post('/api/location-sessions/start', requireAuth, async (req, res) => {
+  console.log('🚀 POST /api/location-sessions/start - Request received');
+  console.log('📦 Request body:', req.body);
+  console.log('👤 User ID:', req.user?.id);
+  
+  try {
+    const { locationId, locationName, latitude, longitude, targetHours } = req.body;
+    
+    if (!locationId || !locationName || !latitude || !longitude || !targetHours) {
+      console.log('❌ Missing required fields:', {
+        hasLocationId: !!locationId,
+        hasLocationName: !!locationName,
+        hasLatitude: !!latitude,
+        hasLongitude: !!longitude,
+        hasTargetHours: !!targetHours
+      });
+      return res.status(400).json({ 
+        error: 'Missing required fields',
+        required: ['locationId', 'locationName', 'latitude', 'longitude', 'targetHours'],
+        received: { locationId, locationName, latitude, longitude, targetHours }
+      });
+    }
+
+    // Check if there's already an active session for this location
+    const { data: existingSession, error: checkError } = await supabase
+      .from('location_sessions')
+      .select('*')
+      .eq('user_id', req.user.id)
+      .eq('location_id', locationId)
+      .eq('is_active', true)
+      .single();
+
+    if (existingSession) {
+      console.log('ℹ️ Session already active, returning existing session:', existingSession.id);
+      return res.json({ 
+        message: 'Session already active', 
+        session: existingSession,
+        wasExisting: true 
+      });
+    }
+
+    // Create new session
+    const { data: session, error } = await supabase
+      .from('location_sessions')
+      .insert({
+        user_id: req.user.id,
+        location_id: locationId,
+        location_name: locationName,
+        latitude: parseFloat(latitude),
+        longitude: parseFloat(longitude),
+        target_hours: parseFloat(targetHours),
+        session_start_time: new Date().toISOString(),
+        is_active: true
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    
+    console.log('✅ New location session created:', session.id);
+    res.json({ message: 'Location session started', session });
+  } catch (error) {
+    console.error('❌ Error starting location session:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// End a location session
+app.post('/api/location-sessions/end', requireAuth, async (req, res) => {
+  try {
+    const { sessionId } = req.body;
+    
+    if (!sessionId) {
+      return res.status(400).json({ error: 'Session ID is required' });
+    }
+
+    // End the session
+    const { data: session, error } = await supabase
+      .from('location_sessions')
+      .update({
+        is_active: false,
+        session_end_time: new Date().toISOString()
+      })
+      .eq('id', sessionId)
+      .eq('user_id', req.user.id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.json({ message: 'Location session ended', session });
+  } catch (error) {
+    console.error('Error ending location session:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get active location sessions
+app.get('/api/location-sessions/active', requireAuth, async (req, res) => {
+  try {
+    const { data: sessions, error } = await supabase
+      .from('location_sessions')
+      .select('*')
+      .eq('user_id', req.user.id)
+      .eq('is_active', true)
+      .order('session_start_time', { ascending: false });
+
+    if (error) throw error;
+    res.json(sessions);
+  } catch (error) {
+    console.error('Error fetching active sessions:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get location session history
+app.get('/api/location-sessions/history', requireAuth, async (req, res) => {
+  try {
+    const { limit = 50, offset = 0 } = req.query;
+    
+    const { data: sessions, error } = await supabase
+      .from('location_sessions')
+      .select('*')
+      .eq('user_id', req.user.id)
+      .order('session_start_time', { ascending: false })
+      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+
+    if (error) throw error;
+    res.json(sessions);
+  } catch (error) {
+    console.error('Error fetching session history:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update session checkpoint (for real-time tracking)
+app.post('/api/location-sessions/checkpoint', requireAuth, async (req, res) => {
+  console.log('📍 POST /api/location-sessions/checkpoint - Request received');
+  console.log('📍 Request body:', req.body);
+  console.log('📍 User:', req.user?.id);
+  
+  try {
+    const { sessionId, latitude, longitude, accuracy } = req.body;
+    
+    if (!sessionId || !latitude || !longitude) {
+      console.log('❌ Missing required fields:', { sessionId, latitude, longitude });
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Get the session to calculate duration
+    const { data: session, error: sessionError } = await supabase
+      .from('location_sessions')
+      .select('session_start_time')
+      .eq('id', sessionId)
+      .eq('user_id', req.user.id)
+      .eq('is_active', true)
+      .single();
+
+    if (sessionError || !session) {
+      console.log('❌ Active session not found for id:', sessionId);
+      return res.status(404).json({ error: 'Active session not found' });
+    }
+
+    const durationSeconds = Math.floor((Date.now() - new Date(session.session_start_time).getTime()) / 1000);
+
+    // Add checkpoint
+    const { data: checkpoint, error } = await supabase
+      .from('location_session_checkpoints')
+      .insert({
+        session_id: sessionId,
+        checkpoint_time: new Date().toISOString(),
+        duration_seconds: durationSeconds,
+        latitude: parseFloat(latitude),
+        longitude: parseFloat(longitude),
+        accuracy: accuracy ? parseFloat(accuracy) : null
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    
+    console.log('✅ Checkpoint added successfully');
+    res.json({ message: 'Checkpoint added', checkpoint, durationSeconds });
+  } catch (error) {
+    console.error('❌ Error adding session checkpoint:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get location achievements
+app.get('/api/location-sessions/achievements', requireAuth, async (req, res) => {
+  try {
+    const { data: achievements, error } = await supabase
+      .from('location_achievements')
+      .select('*')
+      .eq('user_id', req.user.id)
+      .order('achievement_date', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching achievements:', error);
+      // Return empty array if table doesn't exist or query fails
+      return res.json([]);
+    }
+    
+    res.json(achievements || []);
+  } catch (error) {
+    console.error('Error fetching achievements:', error);
+    // Return empty array instead of error to prevent UI crashes
+    res.json([]);
+  }
+});
+
+// Create location achievement
+app.post('/api/location-sessions/achievements', requireAuth, async (req, res) => {
+  try {
+    const { location_id, location_name, target_hours, achieved_hours, achievement_date, is_milestone } = req.body;
+    
+    if (!location_id || !location_name || !target_hours || !achieved_hours) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const { data: achievement, error } = await supabase
+      .from('location_achievements')
+      .insert({
+        user_id: req.user.id,
+        location_id,
+        location_name,
+        target_hours: parseFloat(target_hours),
+        achieved_hours: parseFloat(achieved_hours),
+        achievement_date: achievement_date || new Date().toISOString(),
+        is_milestone: is_milestone || false
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.json({ message: 'Achievement created', achievement });
+  } catch (error) {
+    console.error('Error creating achievement:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== LOCATION LEVELS API ENDPOINTS =====
+
+// Get user's level for a specific location
+app.get('/api/location-levels/:locationId', requireAuth, async (req, res) => {
+  try {
+    const { locationId } = req.params;
+    
+    const { data: level, error } = await supabase
+      .rpc('get_or_create_user_level', {
+        p_user_id: req.user.id,
+        p_location_id: locationId,
+        p_location_name: locationId // You might want to pass the actual name
+      });
+
+    if (error) throw error;
+    res.json(level);
+  } catch (error) {
+    console.error('Error getting user level:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all user's location levels
+app.get('/api/location-levels', requireAuth, async (req, res) => {
+  try {
+    const { data: levels, error } = await supabase
+      .from('location_levels')
+      .select('*')
+      .eq('user_id', req.user.id)
+      .order('updated_at', { ascending: false });
+
+    if (error) {
+      console.error('Error getting user levels:', error);
+      // Return empty array if table doesn't exist or query fails
+      return res.json([]);
+    }
+    
+    res.json(levels || []);
+  } catch (error) {
+    console.error('Error getting user levels:', error);
+    // Return empty array instead of error to prevent UI crashes
+    res.json([]);
+  }
+});
+
+// Update user's time spent at a location
+app.post('/api/location-levels/:locationId/time', requireAuth, async (req, res) => {
+  try {
+    const { locationId } = req.params;
+    const { timeSpentSeconds, locationName } = req.body;
+    
+    if (!timeSpentSeconds) {
+      return res.status(400).json({ error: 'Time spent is required' });
+    }
+
+    // Get or create user level
+    const { data: userLevel, error: levelError } = await supabase
+      .rpc('get_or_create_user_level', {
+        p_user_id: req.user.id,
+        p_location_id: locationId,
+        p_location_name: locationName || locationId
+      });
+
+    if (levelError) throw levelError;
+
+    // Update time spent
+    const newTotalTime = userLevel.total_time_spent_seconds + timeSpentSeconds;
+    
+    const { data: updatedLevel, error: updateError } = await supabase
+      .from('location_levels')
+      .update({
+        total_time_spent_seconds: newTotalTime,
+        updated_at: new Date().toISOString()
+      })
+      .eq('user_id', req.user.id)
+      .eq('location_id', locationId)
+      .select()
+      .single();
+
+    if (updateError) throw updateError;
+
+    // Check if level is completed
+    const { data: isCompleted, error: checkError } = await supabase
+      .rpc('check_level_completion', {
+        p_user_id: req.user.id,
+        p_location_id: locationId,
+        p_level: userLevel.current_level
+      });
+
+    if (checkError) throw checkError;
+
+    res.json({ 
+      level: updatedLevel, 
+      isCompleted: isCompleted,
+      timeSpent: newTotalTime
+    });
+  } catch (error) {
+    console.error('Error updating location time:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Advance user to next level
+app.post('/api/location-levels/:locationId/advance', requireAuth, async (req, res) => {
+  try {
+    const { locationId } = req.params;
+    const { locationName } = req.body;
+
+    const { data: newLevel, error } = await supabase
+      .rpc('advance_to_next_level', {
+        p_user_id: req.user.id,
+        p_location_id: locationId,
+        p_location_name: locationName || locationId
+      });
+
+    if (error) throw error;
+    res.json({ message: 'Level advanced', level: newLevel });
+  } catch (error) {
+    console.error('Error advancing level:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get level achievements
+app.get('/api/location-levels/achievements', requireAuth, async (req, res) => {
+  try {
+    const { data: achievements, error } = await supabase
+      .from('location_level_achievements')
+      .select('*')
+      .eq('user_id', req.user.id)
+      .order('achievement_date', { ascending: false });
+
+    if (error) {
+      console.error('Error getting level achievements:', error);
+      // Return empty array if table doesn't exist or query fails
+      return res.json([]);
+    }
+    
+    res.json(achievements || []);
+  } catch (error) {
+    console.error('Error getting level achievements:', error);
+    // Return empty array instead of error to prevent UI crashes
+    res.json([]);
+  }
+});
+
+// Reset user level to 1
+app.post('/api/location-levels/:locationId/reset', requireAuth, async (req, res) => {
+  try {
+    const { locationId } = req.params;
+    const { locationName } = req.body;
+
+    const { data: resetLevel, error } = await supabase
+      .from('location_levels')
+      .update({
+        current_level: 1,
+        total_time_spent_seconds: 0,
+        updated_at: new Date().toISOString()
+      })
+      .eq('user_id', req.user.id)
+      .eq('location_id', locationId)
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.json({ message: 'Level reset to 1', level: resetLevel });
+  } catch (error) {
+    console.error('Error resetting level:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ error: 'Something went wrong!' });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ error: 'Route not found' });
+});
+
+// Start server with synchronized port detection
+const startServer = async () => {
+  try {
+    // Clean up any stale configurations first
+    await sharedPortConfig.cleanupStale();
+    
+    // Check if there's already a port configuration
+    let PORT = sharedPortConfig.getServerPort();
+    
+    if (!PORT || !sharedPortConfig.isConfigRecent()) {
+      // Find an available port dynamically
+      PORT = await portFinder.findAvailablePort();
+      // Save the port configuration for client to use
+      sharedPortConfig.setPortConfig(PORT);
+    } else {
+      console.log(`📋 Using configured port: ${PORT}`);
+      // Validate the port is still available
+      const isAvailable = await portFinder.isPortAvailable(PORT);
+      if (!isAvailable) {
+        console.log(`⚠️ Configured port ${PORT} is no longer available, finding new port...`);
+        PORT = await portFinder.findAvailablePort();
+        sharedPortConfig.setPortConfig(PORT);
+      }
+    }
+    
+    const server = app.listen(PORT, () => {
+      const actualPort = server.address().port;
+      console.log(`🚀 Server running on http://localhost:${actualPort}`);
+      console.log(`📊 Health check: http://localhost:${actualPort}/api/health`);
+      console.log(`📝 Items API: http://localhost:${actualPort}/api/items`);
+      console.log(`🔗 API Base URL: http://localhost:${actualPort}/api`);
+      
+      // Update the port config with the actual port
+      sharedPortConfig.setPortConfig(actualPort);
+    });
+    
+    // Handle server errors
+    server.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        console.log(`❌ Port ${PORT} is in use, trying next available port...`);
+        // Clean up old config and try again
+        sharedPortConfig.cleanup();
+        portFinder.findAvailablePort().then(newPort => {
+          if (newPort !== PORT) {
+            console.log(`🔄 Retrying on port ${newPort}...`);
+            startServer();
+          }
+        });
+      } else {
+        console.error('❌ Server error:', err);
+      }
+    });
+    
+    // Clean up on exit
+    process.on('exit', () => {
+      sharedPortConfig.cleanup();
+    });
+    
+    process.on('SIGINT', () => {
+      sharedPortConfig.cleanup();
+      process.exit(0);
+    });
+    
+  } catch (error) {
+    console.error('❌ Failed to start server:', error);
+    process.exit(1);
+  }
+};
+
+// Start the server
+startServer();
