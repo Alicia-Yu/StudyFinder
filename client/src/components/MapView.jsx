@@ -3,6 +3,7 @@ import { MapContainer, TileLayer, Marker, Popup, useMap, Circle, Tooltip } from 
 import L from 'leaflet';
 import './MapView.css';
 import { apiService } from '../services/api';
+import GeminiChat from './GeminiChat';
 
 const nancyIcon = L.divIcon({
   html: `
@@ -517,6 +518,8 @@ export default function MapView({
           <MapUpdater location={userLocation} />
         </MapContainer>
       </div>
+
+      <GeminiChat />
     </div>
   );
 }
