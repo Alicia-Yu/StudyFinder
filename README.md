@@ -1,220 +1,104 @@
-# Modern Web App Template
+# ⚔️ ConQuest (StudyFinder)
 
-A full-stack web application template with React frontend, Express.js backend, and Supabase authentication.
+**A gamified study app that turns campus study spots into territories to conquer, with an AI assistant that helps students find where to study.**
 
-## 🚀 Features
+Built for a hackathon at the University of Washington.
 
-- **Frontend**: React 18 with Vite for fast development
-- **Backend**: Express.js with RESTful API
-- **Authentication**: Supabase integration with email/password and OAuth
-- **Styling**: Tailwind CSS for modern UI
-- **State Management**: React Context for authentication
-- **Routing**: React Router for client-side navigation
-- **Development**: Hot reload for both client and server
+<!-- Add a screenshot or GIF of the map and AI chat here, e.g.: ![ConQuest map and AI chat](docs/screenshot.png) -->
 
-## 📁 Project Structure
+**Demo video:** [link here]
 
-```
-web-app/
-├── client/                 # React frontend
-│   ├── src/
-│   │   ├── components/     # Reusable components
-│   │   ├── contexts/       # React contexts
-│   │   ├── lib/           # Utilities and configurations
-│   │   ├── pages/         # Page components
-│   │   └── services/      # API services
-│   ├── .env.example       # Environment variables template
-│   └── package.json
-├── server/                 # Express.js backend
-│   ├── server.js          # Main server file
-│   ├── .env.example       # Environment variables template
-│   └── package.json
-├── .gitignore
-└── package.json           # Root package.json with scripts
-```
+---
 
-## 🛠️ Setup Instructions
+## What it does
 
-### Prerequisites
+- 🗺️ **Interactive map** of UW-area libraries, cafes and study spots, with live location tracking
+- ⏱️ **Study sessions:** time spent at a location counts toward "conquering" it
+- 🏆 **Levels, achievements and a leaderboard** to keep studying motivating
+- 👥 **Friends system** to see where friends are studying
+- 🤖 **AI features** (see below)
 
-- Node.js 20.19+ or 22.12+
-- npm or yarn
-- Git
+---
 
-### 1. Clone the Repository
+## AI features
 
+### AI chat assistant (Groq)
+A built-in chat assistant helps students find study spots and cafes near campus.
+
+- The browser sends messages to the app's own Express server (`POST /api/ai/chat`).
+- The server adds a system prompt (UW, Seattle, study spots), calls Groq's OpenAI-compatible API with the `openai/gpt-oss-20b` model, and returns the reply.
+- The API key lives only in the server's environment variables, so it is never exposed to the browser.
+
+### Personalized insights and recommendations (Gemini)
+Server routes call the Google Gemini API with a signed-in user's own study data:
+
+- `POST /api/ai/insights`: turns time spent, favorite spots and visit patterns into personalized insights
+- `POST /api/ai/recommendations`: suggests new study spots based on location history
+- `POST /api/ai/description`: generates descriptions for study locations
+
+Prompts ask Gemini for **structured JSON** so the app can display results directly, and each route has **fallback responses** if the AI service is unavailable.
+
+---
+
+## Tech stack
+
+| Layer | Tools |
+|---|---|
+| Frontend | React 19, Vite, Tailwind CSS, Leaflet / React-Leaflet, Axios |
+| Backend | Node.js, Express |
+| Database & auth | Supabase (PostgreSQL + Auth) |
+| AI | Groq API (`gpt-oss-20b`), Google Gemini API |
+
+---
+
+## Getting started
+
+### 1. Install dependencies
 ```bash
-git clone <your-repo-url>
-cd web-app
-```
-
-### 2. Install Dependencies
-
-```bash
-# Install all dependencies (client + server)
 npm run install:all
-
-# Or install separately
-npm install                    # Root dependencies
-cd client && npm install      # Client dependencies
-cd ../server && npm install   # Server dependencies
 ```
 
-### 3. Environment Setup
+### 2. Add environment variables
 
-#### Client Environment
-
-Copy the example environment file and configure it:
-
-```bash
-cp client/.env.example client/.env.local
+Create `server/.env`:
 ```
-
-Edit `client/.env.local`:
-
-```env
-# Supabase Configuration
-VITE_SUPABASE_URL=https://your-project-id.supabase.co
-VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
-
-# API Configuration
-VITE_API_URL=http://localhost:3001
-```
-
-#### Server Environment
-
-```bash
-cp server/.env.example server/.env
-```
-
-Edit `server/.env`:
-
-```env
+SUPABASE_URL=your_supabase_url
+SUPABASE_ANON_KEY=your_supabase_anon_key
+SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
+GOOGLE_GEMINI_API_KEY=your_gemini_key
+GROQ_API_KEY=your_groq_key
 PORT=3001
 ```
 
-### 4. Supabase Setup
+Create `client/.env.local`:
+```
+VITE_SUPABASE_URL=your_supabase_url
+VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
+VITE_API_BASE_URL=http://localhost:3001/api
+```
 
-1. Create a new project at [supabase.com](https://supabase.com)
-2. Go to Settings → API
-3. Copy your project URL and anon key
-4. Update your `client/.env.local` file with these values
-5. Enable authentication providers in Supabase dashboard:
-   - Email/Password authentication
-   - OAuth providers (Google, Microsoft, etc.)
+`.env` files are git-ignored. Never commit API keys.
 
-### 5. Start Development
-
+### 3. Run the app
 ```bash
-# Start both client and server
 npm run dev
-
-# Or start separately
-npm run client:dev    # Client only (port 5173)
-npm run server:dev    # Server only (port 3001)
 ```
+This starts the Express server (port 3001) and the Vite frontend (usually http://localhost:5173).
 
-## 📚 Available Scripts
+---
 
-### Root Scripts
+## Project structure
 
-- `npm run dev` - Start both client and server
-- `npm run install:all` - Install all dependencies
-- `npm run build` - Build for production
-
-### Client Scripts
-
-- `npm run client:dev` - Start Vite development server
-- `npm run client:build` - Build client for production
-
-### Server Scripts
-
-- `npm run server:dev` - Start server with nodemon
-- `npm run server:start` - Start server normally
-
-## 🔧 API Endpoints
-
-### Health Check
-- `GET /api/health` - Server health status
-
-### Items API
-- `GET /api/items` - Get all items
-- `POST /api/items` - Create new item
-- `PUT /api/items/:id` - Update item
-- `DELETE /api/items/:id` - Delete item
-
-### Authentication API
-- `POST /api/auth/register` - Register new user
-- `POST /api/auth/login` - Login user
-- `GET /api/auth/me` - Get current user
-
-## 🎨 UI Components
-
-### Authentication
-- **SignIn**: Email/password login with OAuth options
-- **SignUp**: User registration with validation
-- **AuthContext**: Global authentication state management
-
-### Pages
-- **Dashboard**: Main application dashboard
-- **Profile**: User profile management
-- **Settings**: Application settings
-
-## 🔐 Authentication Flow
-
-1. **Supabase First**: Primary authentication through Supabase
-2. **Backend Fallback**: Falls back to backend API if Supabase fails
-3. **OAuth Support**: Google and Microsoft OAuth integration
-4. **Session Management**: Automatic token refresh and session handling
-
-## 🚀 Deployment
-
-### Client Deployment
-
-```bash
-cd client
-npm run build
-# Deploy the 'dist' folder to your hosting service
 ```
-
-### Server Deployment
-
-```bash
-cd server
-npm start
-# Deploy to your server platform (Heroku, Railway, etc.)
+client/          React frontend
+  src/components/  Map, AI chat and UI components
+  src/pages/       Dashboard, Leaderboard, Collections, Settings
+  src/services/    API and AI service calls
+server/          Express backend
+  server.js        API routes, including /api/ai/*
+  services/        Supabase auth and location services
+database/        Database setup scripts
 ```
-
-## 🛡️ Security Features
-
-- Environment variable protection
-- CORS configuration
-- Input validation
-- Secure authentication flow
-- Protected API routes
-
-## 📝 Development Notes
-
-- **Hot Reload**: Both client and server support hot reload
-- **Environment Variables**: Use `.env.local` for client, `.env` for server
-- **API Communication**: Client communicates with server via REST API
-- **Error Handling**: Comprehensive error handling throughout the app
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
-
-## 📄 License
-
-This project is open source and available under the [MIT License](LICENSE).
-
-## 🆘 Support
-
-If you encounter any issues:
 
 1. Check the console for errors
 2. Verify environment variables are set correctly
