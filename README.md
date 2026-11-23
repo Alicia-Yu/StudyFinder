@@ -6,7 +6,7 @@ Built for a hackathon at the University of Washington.
 
 <!-- Add a screenshot or GIF of the map and AI chat here, e.g.: ![ConQuest map and AI chat](docs/screenshot.png) -->
 
-**Demo video:** [link here]
+**Demo video:** (https://www.loom.com/share/17c2c3cef21a4c8899f711b1a1afe917)
 
 ---
 
