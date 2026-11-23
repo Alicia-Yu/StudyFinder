@@ -585,6 +585,47 @@ app.post('/api/location/track', requireAuth, async (req, res) => {
 });
 
 // AI Insights endpoint
+// Proxies chat messages to Groq so the API key stays on the server.
+app.post('/api/ai/chat', optionalAuth, async (req, res) => {
+  try {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: { message: 'AI chat is not configured' } });
+    }
+
+    const { messages } = req.body;
+    if (!Array.isArray(messages)) {
+      return res.status(400).json({ error: { message: 'messages must be an array' } });
+    }
+
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'openai/gpt-oss-20b',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are the StudyFinder assistant for students at the University of Washington in Seattle. Help them find study spots and cafes near campus. Keep answers short and friendly.',
+          },
+          ...messages.slice(-20), // keep only recent messages
+        ],
+        max_tokens: 1024,
+        reasoning_effort: 'low', // less thinking, so faster replies
+      }),
+    });
+
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error) {
+    console.error('AI chat error:', error);
+    res.status(500).json({ error: { message: 'AI chat request failed' } });
+  }
+});
+
 app.post('/api/ai/insights', requireAuth, async (req, res) => {
   try {
     const { userData, locationData } = req.body;

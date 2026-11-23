@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { API_CONFIG } from '../config/environment.js';
 
 export default function GeminiChat() {
   const [messages, setMessages] = useState([]);
@@ -25,14 +26,13 @@ export default function GeminiChat() {
     setLoading(true);
 
     try {
-      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      const response = await fetch(`${API_CONFIG.baseURL}/ai/chat`, {
         method: 'POST',
         headers: {
-          'Authorization': 'Bearer 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',
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token') || localStorage.getItem('auth_token')}`,
         },
         body: JSON.stringify({
-          model: 'openai/gpt-oss-20b',
           messages: [
             ...messages.map(msg => ({
               role: msg.role === 'user' ? 'user' : 'assistant',
@@ -43,7 +43,6 @@ export default function GeminiChat() {
               content: userMessage
             }
           ],
-          max_tokens: 500,
         }),
       });
 
@@ -51,7 +50,7 @@ export default function GeminiChat() {
       console.log('API Response:', data);
 
       if (data.error) {
-        setMessages(prev => [...prev, { role: 'bot', text: `Error: ${data.error.message}` }]);
+        setMessages(prev => [...prev, { role: 'bot', text: `Error: ${data.error.message || data.error}` }]);
       } else if (data.choices && data.choices[0]) {
         const botMessage = data.choices[0].message.content;
         setMessages(prev => [...prev, { role: 'assistant', text: botMessage }]);
